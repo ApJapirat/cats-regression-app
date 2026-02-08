@@ -138,4 +138,5 @@ if st.button("Predict Weight (kg)", type="primary"):
     pred = pipe.predict(input_df)[0]
     st.success(f"✅ Predicted Weight: **{pred:.2f} kg**")
 
-    with s
+    with st.expander("Show input data"):
+        st.dataframe(input_df)
