@@ -9,10 +9,11 @@ import sys
 sys.path.append(os.path.abspath("."))
 
 from src.features import build_features
-from app.ui import render_sidebar, render_inputs, render_output
+from app.ui import render_sidebar, render_inputs
+from app.style import apply_dark_style
 
 
-st.set_page_config(page_title="Car Price Predictor (Jordan)", page_icon="🚗")
+st.set_page_config(page_title="Car Price Predictor (Jordan)", page_icon="🚗", layout="wide")
 
 DATA_PATH = "data/car_prices_jordan.csv"
 MODEL_PATH = "models/car_price_model.joblib"
@@ -20,7 +21,6 @@ META_PATH = "models/metadata.json"
 
 
 def train_and_save_in_cloud():
-    """Fallback retrain on Streamlit Cloud runtime if loading model fails."""
     from sklearn.model_selection import train_test_split
     from sklearn.compose import ColumnTransformer
     from sklearn.pipeline import Pipeline
@@ -109,27 +109,129 @@ def load_or_train():
         return train_and_save_in_cloud()
 
 
-# ===== Page =====
-st.title("🚗 Car Price Predictor (Jordan)")
-st.caption("Multiple Regression (Linear) with 6 features: Brand, Model, Property, Year, PowerCC, Turbo")
+# ===== Style =====
+apply_dark_style()
 
+# ===== Load model/meta =====
 pipe, meta = load_or_train()
 
-# sidebar
+# ===== Sidebar =====
 retrain_clicked = render_sidebar(meta)
 if retrain_clicked:
     load_or_train.clear()
     pipe, meta = train_and_save_in_cloud()
     st.success("Retrained! (ลองกด Rerun / Refresh หน้าเว็บอีกที)")
 
-# data for linked inputs + sanity table
+# ===== Header =====
+st.markdown(
+    f"""
+    <div class="card glow">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="font-size: 2.0rem; font-weight: 800;">🚗 Car Price Predictor <span class="muted">(Jordan)</span></div>
+          <div class="muted">Predict used-car price (JOD) using Brand, Model, Property, Year, PowerCC, Turbo</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="tiny">Model</div>
+          <div style="font-weight:700;">Linear Regression (Ridge)</div>
+          <div class="tiny">R²: {meta['metrics']['r2']:.3f} • RMSE: {meta['metrics']['rmse']:.0f}</div>
+        </div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.write("")  # spacing
+
+# ===== Prepare data =====
 df_raw = pd.read_csv(DATA_PATH)
 df_feat = build_features(df_raw).dropna(subset=["Brand", "Model", "Property", "Year", "PowerCC", "Turbo", "Price"]).copy()
 
-# inputs
-input_df, subset = render_inputs(meta, df_feat)
+# ===== Main layout =====
+col_left, col_right = st.columns([1.15, 1.0], gap="large")
 
-# predict
-if st.button("Predict Price", type="primary"):
-    pred = float(pipe.predict(input_df)[0])
-    render_output(pred, input_df, subset)
+with col_left:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    input_df, subset = render_inputs(meta, df_feat)
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    predict_clicked = st.button("⚡ Predict Price", type="primary", use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col_right:
+    st.markdown('<div class="card glow">', unsafe_allow_html=True)
+    st.subheader("Result")
+    st.caption("Currency: Jordanian Dinar (JOD)")
+    if "last_pred" not in st.session_state:
+        st.session_state["last_pred"] = None
+
+    if predict_clicked:
+        pred = float(pipe.predict(input_df)[0])
+        st.session_state["last_pred"] = pred
+
+    pred = st.session_state["last_pred"]
+    if pred is None:
+        st.markdown("<div class='muted'>กรอกข้อมูลแล้วกด Predict เพื่อดูผลลัพธ์</div>", unsafe_allow_html=True)
+    else:
+        rmse = float(meta["metrics"]["rmse"])
+        low, high = max(0.0, pred - rmse), pred + rmse
+        st.markdown(
+            f"""
+            <div style="font-size:2.1rem; font-weight:900;">{pred:,.0f} JOD</div>
+            <div class="muted">Estimated range (±RMSE): {low:,.0f} – {high:,.0f} JOD</div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ===== Tabs =====
+tab1, tab2, tab3 = st.tabs(["📄 Dataset Preview", "📊 Insights", "ℹ️ About Model"])
+
+with tab1:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.write("Selected rows (sanity check):")
+    if len(subset):
+        st.dataframe(subset[["Model", "Brand", "Property", "Power", "Year", "PowerCC", "Turbo", "Price"]].head(20),
+                     use_container_width=True)
+        st.caption(f"Rows matched: {len(subset)}")
+    else:
+        st.info("No exact row match for this selection (still ok — model can generalize).")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab2:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    # กราฟเบา ๆ ไม่ต้องพึ่ง seaborn
+    st.write("Quick insights (filtered by Brand if possible)")
+    # filter to selected brand if exists
+    brand_val = input_df.loc[0, "Brand"]
+    df_plot = df_feat[df_feat["Brand"] == brand_val].copy()
+    if len(df_plot) < 30:
+        df_plot = df_feat.copy()
+
+    st.write("Price distribution")
+    st.bar_chart(df_plot["Price"].value_counts(bins=30).sort_index())
+
+    st.write("Year vs Price (sample)")
+    sample = df_plot[["Year", "Price"]].dropna().sample(min(800, len(df_plot)), random_state=42)
+    st.scatter_chart(sample, x="Year", y="Price")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab3:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(
+        """
+        **Pipeline**
+        - Feature engineering: Brand/Year from `Model`, PowerCC/Turbo from `Power`
+        - Preprocess: StandardScaler (numeric) + OneHotEncoder (categorical)
+        - Model: Ridge Regression (linear regression family)
+
+        **Metrics meaning**
+        - **R²**: ใกล้ 1 ดี (อธิบายความแปรปรวนของราคาได้มากขึ้น)
+        - **MAE/RMSE**: ใกล้ 0 ดี (error น้อยลง)
+
+        **Limitations**
+        - Dataset ไม่มี mileage / condition / accidents → ทำให้ราคาแกว่งได้
+        - Text parsing อาจพลาดบางรุ่นที่ format แปลก
+        """)
+    st.markdown('</div>', unsafe_allow_html=True)
