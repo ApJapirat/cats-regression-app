@@ -132,11 +132,52 @@ with st.sidebar:
 
 st.subheader("Input Features")
 
-brand = st.selectbox("Brand", options=meta["brand_options"])
-prop = st.selectbox("Property (transmission)", options=meta["property_options"])
-year = st.number_input("Year", min_value=1990, max_value=2026, value=2020, step=1)
-power_cc = st.number_input("Power (CC)", min_value=0.0, max_value=8000.0, value=1500.0, step=50.0)
-turbo = st.selectbox("Turbo", options=[0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
+# dropdown แบบกรอง 
+df_raw = pd.read_csv(DATA_PATH).copy()
+df_raw["Model"] = df_raw["Model"].astype(str).str.strip()
+df_raw["Property"] = df_raw["Property"].astype(str).str.strip().str.lower()
+
+# สร้าง Brand จากคำแรกของ Model
+df_raw["Brand"] = df_raw["Model"].str.split().str[0]
+
+# ดึง year จาก Model 
+df_raw["Year_in_text"] = df_raw["Model"].str.extract(r"((?:19|20)\d{2})")[0]
+df_raw["Year_in_text"] = pd.to_numeric(df_raw["Year_in_text"], errors="coerce")
+
+# ดึง PowerCC + Turbo จาก Power 
+df_raw["PowerCC_in_text"] = df_raw["Power"].astype(str).str.extract(r"(\d+)\s*CC", expand=False)
+df_raw["PowerCC_in_text"] = pd.to_numeric(df_raw["PowerCC_in_text"], errors="coerce")
+df_raw["Turbo_in_text"] = df_raw["Power"].astype(str).str.contains("TURBO", case=False, na=False).astype(int)
+
+# Brand
+brand_options = sorted(df_raw["Brand"].dropna().unique().tolist())
+brand = st.selectbox("Brand", options=brand_options)
+
+# Model
+df_b = df_raw[df_raw["Brand"] == brand].copy()
+model_options = sorted(df_b["Model"].dropna().unique().tolist())
+model = st.selectbox("Model", options=model_options)
+
+# Property 
+df_m = df_b[df_b["Model"] == model].copy()
+property_options = sorted(df_m["Property"].dropna().unique().tolist())
+prop = st.selectbox("Property (transmission)", options=property_options)
+
+# กรองเพิ่มตาม model+property เพื่อเอาค่า default ปี/cc/turbo
+df_mp = df_m[df_m["Property"] == prop].copy()
+
+# default ปี 
+year_default = int(df_mp["Year_in_text"].dropna().iloc[0]) if df_mp["Year_in_text"].notna().any() else 2020
+year = st.number_input("Year", min_value=1990, max_value=2026, value=year_default, step=1)
+
+# default cc
+cc_default = float(df_mp["PowerCC_in_text"].dropna().median()) if df_mp["PowerCC_in_text"].notna().any() else 1500.0
+power_cc = st.number_input("Power (CC)", min_value=0.0, max_value=8000.0, value=float(cc_default), step=50.0)
+
+# default turbo
+turbo_default = int(df_mp["Turbo_in_text"].dropna().iloc[0]) if df_mp["Turbo_in_text"].notna().any() else 0
+turbo = st.selectbox("Turbo", options=[0, 1], index=turbo_default,
+                     format_func=lambda x: "Yes" if x == 1 else "No")
 
 if st.button("Predict Price", type="primary"):
     input_df = pd.DataFrame([{
@@ -152,3 +193,6 @@ if st.button("Predict Price", type="primary"):
 
     with st.expander("Show input data"):
         st.dataframe(input_df)
+
+    with st.expander("Show selected raw rows (for sanity check)"):
+        st.dataframe(df_mp[["Model", "Brand", "Property", "Power", "Price"]].head(20))
