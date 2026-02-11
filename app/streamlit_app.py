@@ -6,49 +6,36 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from sklearn.model_selection import train_test_split
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.linear_model import Ridge
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+# ให้ import src ได้บน Streamlit Cloud
+import sys
+sys.path.append(os.path.abspath("."))
+
+from src.features import build_features
 
 
-st.set_page_config(page_title="Car Price Predictor", page_icon="🚗")
+st.set_page_config(page_title="Car Price Predictor (Jordan)", page_icon="🚗")
 
 DATA_PATH = "data/car_prices_jordan.csv"
 MODEL_PATH = "models/car_price_model.joblib"
 META_PATH = "models/metadata.json"
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create the same features as in training."""
-    import re
+def train_and_save_in_cloud():
+    """
+    ถ้า Streamlit Cloud โหลดโมเดลไม่ได้ (เช่น joblib mismatch) ให้เทรนใหม่ใน runtime นี้
+    โดยเรียก train.py logic แบบย่อ ๆ ตรงนี้
+    """
+    from sklearn.model_selection import train_test_split
+    from sklearn.compose import ColumnTransformer
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
-    def extract_year(model: str):
-        m = re.search(r"(19|20)\d{2}", str(model))
-        return int(m.group()) if m else np.nan
+    df_raw = pd.read_csv(DATA_PATH)
+    df = build_features(df_raw)
 
-    def extract_cc(power: str):
-        m = re.search(r"(\d+)\s*CC", str(power).upper())
-        return float(m.group(1)) if m else np.nan
-
-    out = df.copy()
-    out["Price"] = out["Price"].astype(str).str.replace(",", "", regex=False).astype(float)
-
-    out["Brand"] = out["Model"].astype(str).str.strip().str.split().str[0]
-    out["Year"] = out["Model"].apply(extract_year)
-    out["Property"] = out["Property"].astype(str).str.strip().str.lower()
-    out["PowerCC"] = out["Power"].apply(extract_cc)
-    out["Turbo"] = out["Power"].astype(str).str.contains("TURBO", case=False, na=False).astype(int)
-    return out
-
-
-def train_and_save():
-    df = pd.read_csv(DATA_PATH)
-    df = build_features(df)
-
-    features = ["Brand", "Property", "Year", "PowerCC", "Turbo"]
+    features = ["Brand", "Model", "Property", "Year", "PowerCC", "Turbo"]
     target = "Price"
 
     df = df.dropna(subset=features + [target]).copy()
@@ -60,7 +47,7 @@ def train_and_save():
     )
 
     num_cols = ["Year", "PowerCC", "Turbo"]
-    cat_cols = ["Brand", "Property"]
+    cat_cols = ["Brand", "Model", "Property"]
 
     preprocess = ColumnTransformer(
         transformers=[
@@ -85,13 +72,28 @@ def train_and_save():
     os.makedirs("models", exist_ok=True)
     joblib.dump(pipe, MODEL_PATH)
 
+    brands = sorted(df["Brand"].dropna().unique().tolist())
+
+    brand_to_models = {}
+    brand_model_to_props = {}
+    for b in brands:
+        models = sorted(df.loc[df["Brand"] == b, "Model"].dropna().unique().tolist())
+        brand_to_models[b] = models
+        for m in models:
+            props = sorted(df.loc[(df["Brand"] == b) & (df["Model"] == m), "Property"].dropna().unique().tolist())
+            brand_model_to_props[f"{b}|||{m}"] = props
+
     meta = {
         "features": features,
         "target": target,
-        "brand_options": sorted(df["Brand"].unique().tolist()),
-        "property_options": sorted(df["Property"].unique().tolist()),
         "metrics": {"r2": float(r2), "mae": float(mae), "rmse": float(rmse)},
+        "options": {
+            "brands": brands,
+            "brand_to_models": brand_to_models,
+            "brand_model_to_props": brand_model_to_props,
+        }
     }
+
     with open(META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
@@ -106,12 +108,12 @@ def load_or_train():
             meta = json.load(f)
         return pipe, meta
     except Exception:
-        return train_and_save()
+        return train_and_save_in_cloud()
 
 
-# UI
+# ===== UI =====
 st.title("🚗 Car Price Predictor (Jordan)")
-st.caption("Multiple Regression (Linear) using 5 features: Brand, Property, Year, PowerCC, Turbo")
+st.caption("Multiple Regression (Linear) with 6 features: Brand, Model, Property, Year, PowerCC, Turbo")
 
 pipe, meta = load_or_train()
 
@@ -127,61 +129,36 @@ with st.sidebar:
 
     if st.button("🔁 Retrain model (cloud)"):
         load_or_train.clear()
-        pipe, meta = train_and_save()
+        pipe, meta = train_and_save_in_cloud()
         st.success("Retrained! (ลองกด Rerun / Refresh หน้าเว็บอีกที)")
+
 
 st.subheader("Input Features")
 
-# dropdown แบบกรอง 
-df_raw = pd.read_csv(DATA_PATH).copy()
-df_raw["Model"] = df_raw["Model"].astype(str).str.strip()
-df_raw["Property"] = df_raw["Property"].astype(str).str.strip().str.lower()
+# โหลด raw data เพื่อโชว์ sanity check (optional)
+df_raw = pd.read_csv(DATA_PATH)
+df_feat = build_features(df_raw)
 
-# สร้าง Brand จากคำแรกของ Model
-df_raw["Brand"] = df_raw["Model"].str.split().str[0]
+brands = meta["options"]["brands"]
+brand_to_models = meta["options"]["brand_to_models"]
+brand_model_to_props = meta["options"]["brand_model_to_props"]
 
-# ดึง year จาก Model 
-df_raw["Year_in_text"] = df_raw["Model"].str.extract(r"((?:19|20)\d{2})")[0]
-df_raw["Year_in_text"] = pd.to_numeric(df_raw["Year_in_text"], errors="coerce")
+brand = st.selectbox("Brand", options=brands)
 
-# ดึง PowerCC + Turbo จาก Power 
-df_raw["PowerCC_in_text"] = df_raw["Power"].astype(str).str.extract(r"(\d+)\s*CC", expand=False)
-df_raw["PowerCC_in_text"] = pd.to_numeric(df_raw["PowerCC_in_text"], errors="coerce")
-df_raw["Turbo_in_text"] = df_raw["Power"].astype(str).str.contains("TURBO", case=False, na=False).astype(int)
+models_for_brand = brand_to_models.get(brand, [])
+model = st.selectbox("Model", options=models_for_brand if models_for_brand else ["(no models)"])
 
-# Brand
-brand_options = sorted(df_raw["Brand"].dropna().unique().tolist())
-brand = st.selectbox("Brand", options=brand_options)
+props_for_model = brand_model_to_props.get(f"{brand}|||{model}", [])
+prop = st.selectbox("Property (transmission)", options=props_for_model if props_for_model else ["(no property)"])
 
-# Model
-df_b = df_raw[df_raw["Brand"] == brand].copy()
-model_options = sorted(df_b["Model"].dropna().unique().tolist())
-model = st.selectbox("Model", options=model_options)
-
-# Property 
-df_m = df_b[df_b["Model"] == model].copy()
-property_options = sorted(df_m["Property"].dropna().unique().tolist())
-prop = st.selectbox("Property (transmission)", options=property_options)
-
-# กรองเพิ่มตาม model+property เพื่อเอาค่า default ปี/cc/turbo
-df_mp = df_m[df_m["Property"] == prop].copy()
-
-# default ปี 
-year_default = int(df_mp["Year_in_text"].dropna().iloc[0]) if df_mp["Year_in_text"].notna().any() else 2020
-year = st.number_input("Year", min_value=1990, max_value=2026, value=year_default, step=1)
-
-# default cc
-cc_default = float(df_mp["PowerCC_in_text"].dropna().median()) if df_mp["PowerCC_in_text"].notna().any() else 1500.0
-power_cc = st.number_input("Power (CC)", min_value=0.0, max_value=8000.0, value=float(cc_default), step=50.0)
-
-# default turbo
-turbo_default = int(df_mp["Turbo_in_text"].dropna().iloc[0]) if df_mp["Turbo_in_text"].notna().any() else 0
-turbo = st.selectbox("Turbo", options=[0, 1], index=turbo_default,
-                     format_func=lambda x: "Yes" if x == 1 else "No")
+year = st.number_input("Year", min_value=1990, max_value=2026, value=2020, step=1)
+power_cc = st.number_input("Power (CC)", min_value=0.0, max_value=8000.0, value=1500.0, step=50.0)
+turbo = st.selectbox("Turbo", options=[0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
 
 if st.button("Predict Price", type="primary"):
     input_df = pd.DataFrame([{
         "Brand": brand,
+        "Model": model,
         "Property": prop,
         "Year": year,
         "PowerCC": power_cc,
@@ -194,5 +171,12 @@ if st.button("Predict Price", type="primary"):
     with st.expander("Show input data"):
         st.dataframe(input_df)
 
+    # sanity check: แถวจริงที่ match brand+model+property (โชว์ให้ดูว่าเลือกถูกคัน)
     with st.expander("Show selected raw rows (for sanity check)"):
-        st.dataframe(df_mp[["Model", "Brand", "Property", "Power", "Price"]].head(20))
+        show = df_feat[
+            (df_feat["Brand"] == brand) &
+            (df_feat["Model"] == model) &
+            (df_feat["Property"] == prop)
+        ][["Model", "Brand", "Property", "Power", "Price"]].head(10)
+
+        st.dataframe(show if len(show) else pd.DataFrame({"note": ["No exact row match (still ok for prediction)"]}))
