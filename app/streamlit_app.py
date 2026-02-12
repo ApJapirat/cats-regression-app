@@ -109,20 +109,20 @@ def load_or_train():
         return train_and_save_in_cloud()
 
 
-# ===== Style =====
+# Style
 apply_dark_style()
 
-# ===== Load model/meta =====
+# Load model/meta 
 pipe, meta = load_or_train()
 
-# ===== Sidebar =====
+# Sidebar 
 retrain_clicked = render_sidebar(meta)
 if retrain_clicked:
     load_or_train.clear()
     pipe, meta = train_and_save_in_cloud()
     st.success("Retrained! (ลองกด Rerun / Refresh หน้าเว็บอีกที)")
 
-# ===== Header =====
+# Header
 st.markdown(
     f"""
     <div class="card glow">
@@ -144,11 +144,11 @@ st.markdown(
 
 st.write("")  # spacing
 
-# ===== Prepare data =====
+# Prepare data
 df_raw = pd.read_csv(DATA_PATH)
 df_feat = build_features(df_raw).dropna(subset=["Brand", "Model", "Property", "Year", "PowerCC", "Turbo", "Price"]).copy()
 
-# ===== Main layout =====
+# Main layout
 col_left, col_right = st.columns([1.15, 1.0], gap="large")
 
 with col_left:
@@ -161,7 +161,22 @@ with col_left:
 with col_right:
     st.markdown('<div class="card glow">', unsafe_allow_html=True)
     st.subheader("Result")
+
+    # Currency settings 
     st.caption("Currency: Jordanian Dinar (JOD)")
+    # อัตราแลกเปลี่ยนแบบประมาณ
+    FX_JOD_TO_THB = 43.65
+
+    # ตัวเลือกให้ผู้ใช้ปรับ rate เอง 
+    FX_JOD_TO_THB = st.number_input(
+        "Exchange rate (THB per 1 JOD)",
+        min_value=1.0,
+        max_value=200.0,
+        value=float(FX_JOD_TO_THB),
+        step=0.5,
+        help="Approximate rate for quick conversion. อัตราจริงอาจเปลี่ยนแปลงได้"
+    )
+
     if "last_pred" not in st.session_state:
         st.session_state["last_pred"] = None
 
@@ -170,23 +185,38 @@ with col_right:
         st.session_state["last_pred"] = pred
 
     pred = st.session_state["last_pred"]
+
     if pred is None:
         st.markdown("<div class='muted'>กรอกข้อมูลแล้วกด Predict เพื่อดูผลลัพธ์</div>", unsafe_allow_html=True)
     else:
         rmse = float(meta["metrics"]["rmse"])
         low, high = max(0.0, pred - rmse), pred + rmse
+
+        # Convert to THB 
+        pred_thb = pred * FX_JOD_TO_THB
+        low_thb = low * FX_JOD_TO_THB
+        high_thb = high * FX_JOD_TO_THB
+
         st.markdown(
             f"""
             <div style="font-size:2.1rem; font-weight:900;">{pred:,.0f} JOD</div>
             <div class="muted">Estimated range (±RMSE): {low:,.0f} – {high:,.0f} JOD</div>
+            <div style="height:10px;"></div>
+            <div style="font-size:1.35rem; font-weight:800;">≈ {pred_thb:,.0f} THB <span class="muted" style="font-weight:600;">(approx.)</span></div>
+            <div class="muted">Approx range: {low_thb:,.0f} – {high_thb:,.0f} THB</div>
             """,
             unsafe_allow_html=True
         )
 
+        st.caption(
+            "Note: THB conversion uses an approximate exchange rate and may vary. "
+            "Prediction reflects listed market price in dataset; may not include additional fees (registration/transfer/etc.)."
+        )
+
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ===== Tabs =====
-# ===== Tabs (NO matplotlib / NO seaborn) =====
+
+# Tabs (NO matplotlib / NO seaborn)
 tab1, tab2, tab3 = st.tabs(["📄 Dataset Preview", "📊 Insights", "ℹ️ About Model"])
 
 with tab1:
