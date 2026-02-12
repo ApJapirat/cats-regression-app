@@ -1,114 +1,107 @@
 # app/ui.py
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 
-def render_sidebar(meta: dict):
-    """Sidebar: show model info + retrain button (return True if retrain clicked)."""
+def render_sidebar(meta: dict) -> bool:
     with st.sidebar:
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
         st.subheader("Model Info")
-        st.write("Target:", meta["target"])
-        st.write("Features:", ", ".join(meta["features"]))
+        st.write("Target:", meta.get("target", "-"))
+        st.write("Features:", ", ".join(meta.get("features", [])))
 
         st.write("Test Metrics (hold-out test set):")
-        st.metric("R²", f"{meta['metrics']['r2']:.3f}")
-        st.metric("MAE", f"{meta['metrics']['mae']:.0f}")
-        st.metric("RMSE", f"{meta['metrics']['rmse']:.0f}")
+        m = meta.get("metrics", {})
+        st.metric("R²", f"{float(m.get('r2', 0.0)):.3f}")
+        st.metric("MAE", f"{float(m.get('mae', 0.0)):.0f}")
+        st.metric("RMSE", f"{float(m.get('rmse', 0.0)):.0f}")
 
-        retrain_clicked = st.button("🔁 Retrain model (cloud)")
-        return retrain_clicked
+        st.caption("R² ใกล้ 1 ดี, MAE/RMSE ใกล้ 0 ดี")
+
+        retrain_clicked = st.button("🔁 Retrain model (cloud)", use_container_width=True)
+
+    return retrain_clicked
 
 
 def render_inputs(meta: dict, df_feat: pd.DataFrame):
     """
-    Main UI: Brand -> Model -> Property แล้ว Year/PowerCC/Turbo "เชื่อม" ตามแถวจริง
-    Return: input_df (พร้อม predict) และ subset rows สำหรับ sanity check
+    Linked inputs:
+    Brand -> Model -> Property -> (Year/PowerCC/Turbo constrained if matched rows exist)
+    Return:
+    - input_df (1 row) with columns required by model features
+    - subset (matched rows for sanity check)
     """
+    opts = meta.get("options", {})
+    brands = opts.get("brands", [])
+    brand_to_models = opts.get("brand_to_models", {})
+    brand_model_to_props = opts.get("brand_model_to_props", {})
+
     st.subheader("Input Features")
 
-    brands = meta["options"]["brands"]
-    brand_to_models = meta["options"]["brand_to_models"]
-    brand_model_to_props = meta["options"]["brand_model_to_props"]
+    if not brands:
+        st.error("No brand options found in metadata. Please retrain.")
+        return pd.DataFrame([{}]), df_feat.iloc[0:0]
 
-    # 1) Brand -> Model -> Property
-    brand = st.selectbox("Brand", options=brands)
+    # Brand 
+    brand = st.selectbox("Brand", options=brands, index=0)
 
-    models_for_brand = brand_to_models.get(brand, [])
-    model = st.selectbox("Model", options=models_for_brand if models_for_brand else ["(no models)"])
+    # Model 
+    models = brand_to_models.get(brand, [])
+    if not models:
+        models = sorted(df_feat.loc[df_feat["Brand"] == brand, "Model"].dropna().unique().tolist())
 
-    props_for_model = brand_model_to_props.get(f"{brand}|||{model}", [])
-    prop = st.selectbox("Property (transmission)", options=props_for_model if props_for_model else ["(no property)"])
+    model = st.selectbox("Model", options=models, index=0 if models else 0)
 
-    # 2) Filter real rows to link Year/PowerCC/Turbo
-    subset = df_feat[
+    # Property  
+    key = f"{brand}|||{model}"
+    props = brand_model_to_props.get(key, [])
+    if not props:
+        props = sorted(df_feat.loc[(df_feat["Brand"] == brand) & (df_feat["Model"] == model), "Property"].dropna().unique().tolist())
+
+    prop = st.selectbox("Property (transmission)", options=props if props else ["-"], index=0)
+
+    # Matched subset rows for constraint + preview
+    subset = df_feat.loc[
         (df_feat["Brand"] == brand) &
         (df_feat["Model"] == model) &
         (df_feat["Property"] == prop)
     ].copy()
 
-    has_rows = len(subset) > 0
+    # Constrain Year/PowerCC/Turbo if subset exists 
+    if len(subset) > 0:
+        year_options = sorted(subset["Year"].dropna().unique().astype(int).tolist())
+        power_options = sorted(subset["PowerCC"].dropna().unique().astype(float).tolist())
+        turbo_options = sorted(subset["Turbo"].dropna().unique().astype(int).tolist())
 
-    # Year
-    if has_rows:
-        year_options = sorted(subset["Year"].astype(int).unique().tolist())
-        default_year = int(year_options[-1])  # ล่าสุด
-        year = st.selectbox("Year", options=year_options, index=year_options.index(default_year))
+        year = st.selectbox("Year", options=year_options, index=0)
+        power_cc = st.selectbox("Power (CC)", options=power_options, index=0)
+        turbo = st.selectbox("Turbo", options=turbo_options, format_func=lambda x: "Yes" if int(x) == 1 else "No")
+        st.caption(f"🔗 Linked inputs: found {len(subset)} row(s) for this Brand+Model+Property, so Year/PowerCC/Turbo are constrained.")
     else:
+        # fallback: allow manual input
         year = st.number_input("Year", min_value=1990, max_value=2026, value=2020, step=1)
-
-    # PowerCC
-    if has_rows:
-        power_options = sorted(subset["PowerCC"].round(0).astype(int).unique().tolist())
-        default_power = int(np.median(power_options)) if power_options else 1500
-        power_cc = st.selectbox(
-            "Power (CC)",
-            options=power_options if power_options else [1500],
-            index=power_options.index(default_power) if default_power in power_options else 0
-        )
-    else:
         power_cc = st.number_input("Power (CC)", min_value=0.0, max_value=8000.0, value=1500.0, step=50.0)
+        turbo = st.selectbox("Turbo", options=[0, 1], format_func=lambda x: "Yes" if int(x) == 1 else "No")
+        st.caption("No exact row match — still ok. Model can generalize from patterns.")
 
-    # Turbo
-    if has_rows:
-        turbo_options = sorted(subset["Turbo"].astype(int).unique().tolist())  # [0] or [1] or [0,1]
-        default_turbo = 1 if 1 in turbo_options else 0
-        turbo = st.selectbox(
-            "Turbo",
-            options=turbo_options,
-            index=turbo_options.index(default_turbo),
-            format_func=lambda x: "Yes" if x == 1 else "No",
-        )
+    # Build input_df matching model feature list
+    use_year = bool(meta.get("use_year", True))
+    if use_year:
+        input_df = pd.DataFrame([{
+            "Brand": brand,
+            "Model": model,
+            "Property": prop,
+            "Year": int(year),
+            "PowerCC": float(power_cc),
+            "Turbo": int(turbo),
+        }])
     else:
-        turbo = st.selectbox("Turbo", options=[0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
-
-    input_df = pd.DataFrame([{
-        "Brand": brand,
-        "Model": model,
-        "Property": prop,
-        "Year": int(year),
-        "PowerCC": float(power_cc),
-        "Turbo": int(turbo),
-    }])
-
-    # hint text
-    if has_rows:
-        st.caption(f"🔗 Linked inputs: found {len(subset)} rows for this Brand+Model+Property, so Year/CC/Turbo are constrained to valid values.")
-    else:
-        st.caption("⚠️ No exact row match for Brand+Model+Property, so Year/CC/Turbo are free inputs (fallback).")
+        input_df = pd.DataFrame([{
+            "Brand": brand,
+            "Model": model,
+            "Property": prop,
+            "PowerCC": float(power_cc),
+            "Turbo": int(turbo),
+        }])
 
     return input_df, subset
-
-
-def render_output(pred: float, input_df: pd.DataFrame, subset: pd.DataFrame):
-    st.success(f"✅ Predicted Price: **{pred:,.0f} JOD**")
-
-    with st.expander("Show input data"):
-        st.dataframe(input_df)
-
-    with st.expander("Show selected raw rows (for sanity check)"):
-        if len(subset):
-            show = subset[["Model", "Brand", "Property", "Power", "Year", "PowerCC", "Turbo", "Price"]].head(10)
-            st.dataframe(show)
-        else:
-            st.dataframe(pd.DataFrame({"note": ["No exact row match (still ok for prediction)"]}))
